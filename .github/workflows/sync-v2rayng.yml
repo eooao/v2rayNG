@@ -1,0 +1,97 @@
+name: Sync v2rayNG Releases
+
+on:
+  schedule:
+    - cron: "0 17 * * *"   # 每天北京时间 01:00（UTC 17:00）
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout (no-op)
+        uses: actions/checkout@v4
+
+      - name: Install jq
+        run: sudo apt-get update && sudo apt-get install -y jq
+
+      - name: Get latest upstream release info
+        id: upstream
+        run: |
+          API="https://api.github.com/repos/eooao/v2rayNG/releases/latest"
+          echo "Fetching $API"
+          resp=$(curl -sS "$API")
+          tag=$(echo "$resp" | jq -r .tag_name)
+          name=$(echo "$resp" | jq -r .name)
+          body=$(echo "$resp" | jq -r .body)
+          # If tag is null/empty, fail early
+          if [ -z "$tag" ] || [ "$tag" = "null" ]; then
+            echo "No latest release found. Exiting."
+            echo "release=" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          echo "release=$tag" >> $GITHUB_OUTPUT
+          # Save name and body for later use
+          echo "release_name<<EOF" >> $GITHUB_OUTPUT
+          echo "$name" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+          echo "release_body<<'EOF'" >> $GITHUB_OUTPUT
+          echo "$body" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Debug latest release
+        run: |
+          echo "Latest upstream tag: ${{ steps.upstream.outputs.release }}"
+          echo "Release name: ${{ steps.upstream.outputs.release_name }}"
+        if: ${{ steps.upstream.outputs.release != '' }}
+
+      - name: Check if release already exists in this repo
+        id: check
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ steps.upstream.outputs.release }}"
+          if [ -z "$TAG" ]; then
+            echo "exists=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Exit if already synced
+        if: steps.check.outputs.exists == 'true'
+        run: echo "Upstream release ${{ steps.upstream.outputs.release }} already exists in this repo. Nothing to do."
+
+      - name: Download upstream release assets
+        if: steps.check.outputs.exists == 'false' && steps.upstream.outputs.release != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ steps.upstream.outputs.release }}"
+          mkdir -p release
+          echo "Downloading assets for $TAG from eooao/v2rayNG..."
+          gh release download "$TAG" -R eooao/v2rayNG -D release || true
+          ls -la release
+
+      - name: Publish release to this repo (copy notes)
+        if: steps.check.outputs.exists == 'false' && steps.upstream.outputs.release != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ steps.upstream.outputs.release }}"
+          NAME="${{ steps.upstream.outputs.release_name }}"
+          BODY="${{ steps.upstream.outputs.release_body }}"
+          # If no assets were downloaded, still create a release with notes
+          if [ -z "$(ls -A release 2>/dev/null)" ]; then
+            echo "No assets found; creating release without assets."
+            gh release create "$TAG" --title "${NAME:-$TAG}" --notes "$BODY"
+          else
+            gh release create "$TAG" release/* --title "${NAME:-$TAG}" --notes "$BODY"
+          fi
