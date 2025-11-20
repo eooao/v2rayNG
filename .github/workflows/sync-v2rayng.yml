@@ -22,7 +22,7 @@ jobs:
       - name: Get latest upstream release info
         id: upstream
         run: |
-          API="https://api.github.com/repos/eooao/v2rayNG/releases/latest"
+          API="https://api.github.com/repos/2dust/v2rayNG/releases/latest"
           echo "Fetching $API"
           resp=$(curl -sS "$API")
           tag=$(echo "$resp" | jq -r .tag_name)
